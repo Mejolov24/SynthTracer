@@ -1,151 +1,142 @@
-import time
-import serial
+import oscilloscope
+import colors
+import menucli as menu
 import mido
-mido.set_backend('mido.backends.pygame')
+import logo
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore
-import numpy as np
-import random
-import threading
+import serial
+import serial.tools.list_ports
 
-# --- CONFIGURATION ---
-SERIAL_PORT = 'COM3'
-BAUD_RATE = 1000000
-BUFFER_SIZE = 400  # Zoomed in: shows 50ms of data at 8kHz
-CHANNELS = 15      # REMOVED Master Mix (17 -> 16)
-FPS = 60           
-PERIOD_MS = int(1000 / FPS)
+mido.set_backend('mido.backends.pygame') # temporal, for window test cus i hate compiling there
 
-# --- SERIAL SETUP ---
-ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0)
-ser.set_buffer_size(rx_size=65536, tx_size=16384)
+midi_input = None
+serial_output : serial.Serial = None
 
-# --- PLOT SETUP ---
-app = pg.mkQApp("ESP32 MIDI Visualizer")
-win = pg.GraphicsLayoutWidget(show=True)
-win.setWindowTitle("16-Channel 16-Bit Oscilloscope")
+def make_window():
+    win = pg.GraphicsLayoutWidget(show=True)
+    win.setWindowTitle("SynthTracer")
+    app = pg.mkQApp("SynthTracer")
 
-colors = ['y', 'r', 'g', 'b', 'c', 'm']
-plots = []
-curves = []
-data_channels = [np.zeros(BUFFER_SIZE) for _ in range(CHANNELS)]
-channels_to_update = set()
-data_lock = threading.Lock()
-
-for i in range(CHANNELS):
-    # Layout: 2 columns of 8 rows
-    if i % 2 != 0:
-        win.nextRow()
-    
-    title = f"Channel {i + 1}"
-    p = win.addPlot(title=title)
-    
-    # Optimization & Zoom
-    p.setDownsampling(mode='peak')
-    p.setClipToView(True)
-    p.setRange(xRange=[0, BUFFER_SIZE], yRange=[-32768, 32767], padding=0)
-    p.disableAutoRange()
-    
-    c = p.plot(pen=random.choice(colors))
-    
-    plots.append(p)
-    curves.append(c)
-
-# --- LOGIC THREADS ---
-
-def update_midi():
-    """Reads MIDI from input port and pipes it directly to Serial."""
-    while True:
-        message = midi_input.poll()
-        if message:
-            ser.write(message.bytes())
-        time.sleep(0.001)
-
-def update_logic():
-    """Handles incoming 16-bit serial data using fast chunk processing."""
-    global channels_to_update
-    stream_buffer = bytearray()
-    
-    while True:
-        # Check if data is available; if not, yield CPU time to prevent GUI starvation
-        in_waiting = ser.in_waiting
-        if in_waiting == 0:
-            time.sleep(0.001)
-            continue
-            
-        # Read all available bytes at once
-        stream_buffer.extend(ser.read(in_waiting))
-        
-        processed_bytes = 0
-        buffer_length = len(stream_buffer)
-        
-        with data_lock:
-            # We need at least 4 bytes for a complete packet (Header + ID + 2 Byte Sample)
-            while processed_bytes <= buffer_length - 4:
-                if stream_buffer[processed_bytes] != 255:
-                    processed_bytes += 1
-                    continue  # Scan forward until we hit a sync header
-                
-                # Extract packet data safely
-                channel_id = stream_buffer[processed_bytes + 1]
-                
-                if channel_id < CHANNELS:
-                    # Convert 2 bytes back to signed 16-bit integer quickly
-                    b1 = stream_buffer[processed_bytes + 2]
-                    b2 = stream_buffer[processed_bytes + 3]
-                    sample = (b1 << 8) | b2
-                    if sample & 0x8000:  # Compute two's complement sign
-                        sample -= 65536
-                    
-                    # High-speed in-place buffer update (Avoids costly np.roll memory copies)
-                    data_channels[channel_id][:-1] = data_channels[channel_id][1:]
-                    data_channels[channel_id][-1] = sample
-                    channels_to_update.add(channel_id)
-                
-                processed_bytes += 4
-                
-        # Remove processed bytes from the stream buffer
-        if processed_bytes > 0:
-            del stream_buffer[:processed_bytes]
-
-def update_graph():
-    """Main UI thread update for plotting."""
-    with data_lock:
-        if not channels_to_update:
-            return
-        for ch in channels_to_update:
-            curves[ch].setData(data_channels[ch])
-        channels_to_update.clear()
-
-def start_system():
-    available_ports = mido.get_input_names()
-    if not available_ports:
-        print("No MIDI ports found!")
-        return
-
-    for i, name in enumerate(available_ports):
-        print(f"[{i}] {name}")
-    
+def serialTX():
     try:
-        selection = int(input("Select MIDI Port Number: "))
-        port_name = available_ports[selection]
-    except (ValueError, IndexError):
-        print("Invalid selection.")
-        return
+        while True:
+            message = midi_input.poll()
+            if message:
+                try: serial_output.write(message.bytes())
+                except Exception :
+                    colors.colorprint("[ERR] Disconnected!","red")
+                    return
+    except KeyboardInterrupt: return
 
+def is_serial_valid():
+    global serial_output
+
+    try :
+        serial_output.write(255)
+        return True
+    except Exception : return False
+
+
+def is_midi_valid():
     global midi_input
-    midi_input = mido.open_input(port_name)
 
-    # Launch processing threads
-    threading.Thread(target=update_midi, daemon=True).start()
-    threading.Thread(target=update_logic, daemon=True).start()
+    return (
+        midi_input is not None
+        and not midi_input.closed
+    )
 
-    # PyQtGraph high-frequency timer
-    global timer
-    timer = QtCore.QTimer()
-    timer.timeout.connect(update_graph)
-    timer.start(PERIOD_MS)
+def get_serial_port():
+    serial_ports = serial.tools.list_ports.comports()
+    serial_ports_amount = len(serial_ports)
 
-if __name__ == '__main__':
-    start_system()
-    pg.exec()
+    print("Select a serial port")
+    if (serial_ports_amount == 0):
+        input("No serial ports detected! press enter to retry")
+        return get_serial_port()
+    for index, port in enumerate(serial_ports):
+        print(index, "", port)
+    port_id = menu._ask_value(int,"Enter port number : ", 0, serial_ports_amount - 1)
+    return str(serial_ports[port_id][0])
+
+def get_midi_port():
+    midi_input_ports = mido.get_input_names()
+    midi_input_amount = len(midi_input_ports)
+
+    if (midi_input is not None) : return
+    print("Select a midi port")
+    if (midi_input_amount == 0):
+        input("No midi ports detected! press enter to refresh")
+        return get_midi_port()
+    for index, port in enumerate(midi_input_ports):
+        print(index, "", port)
+    port_id = menu._ask_value(int,"Enter port number : ", 0, midi_input_amount - 1)
+    return midi_input_ports[port_id]
+
+def configure_IO():
+    global midi_input, serial_output
+
+    try:
+        if not is_serial_valid():
+            serial_port = get_serial_port()
+            baudrate = menu._ask_value(int,"Enter a baudrate (set to 0 if CDC) : ")
+            serial_output = serial.Serial(serial_port,baudrate)
+        if not is_midi_valid():
+            print()
+            midi_port = get_midi_port()
+            midi_input = mido.open_input(midi_port)
+    except KeyboardInterrupt: return
+
+def handle_oscilloscope():
+    configure_IO()
+    print()
+    print("Press Control + C to stop")
+    make_window()
+    serialTX()
+    print("\n")
+
+def set_and_store_settings(index, value = None):
+    match index:
+        case 0:
+            oscilloscope.settings["buffer_size"] = value
+        case 1:
+            oscilloscope.settings["rx_rate"] = value
+        case 2:
+            oscilloscope.settings["data_window_ms"] = value
+        case 3:
+            oscilloscope.settings["channels_amount"] = value
+        case 4:
+            oscilloscope.settings["min_val"] = value
+        case 5:
+            oscilloscope.settings["max_val"] = value
+
+    oscilloscope.sync_json_settings()
+
+ConfigurationMenu = menu.Menu([
+    menu.MenuItem("Buffer size", int, "Enter a size : "),
+    menu.MenuItem("Rx rate", int, "Enter a rate in hz : "),
+    menu.MenuItem("Data Window", int, "Enter a window in ms : "),
+    menu.MenuItem("Channels amount", int, "Enter some channels amount : "),
+    menu.MenuItem("Minimum value", int, "Enter a value : "),
+    menu.MenuItem("Maximum value", int, "Enter a value : "),
+    menu.MenuItem("Exit",menu.Exit)
+],
+set_and_store_settings, False)
+
+MainMenu = menu.Menu([
+    menu.MenuItem(colors.colortext("Start","green"),callable, target=handle_oscilloscope),
+    menu.MenuItem("Configure",menu.Menu,target=ConfigurationMenu),
+    menu.MenuItem(colors.colortext("Exit","orange"),menu.Exit)
+],
+None, False)
+
+
+menu.goToMenu(MainMenu)
+colors.colorprint(logo.logo,'green')
+print("SynthTracer by Guillermo Beckers (Mejolov24 on github)")
+print("oscilloscope tool for sending serial midi and plotting incoming audio data")
+while menu.render():
+    print("\033[H\033[2J")
+    colors.colorprint(logo.logo,'green')
+
+print("Thanks for using!")
