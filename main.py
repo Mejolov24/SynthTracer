@@ -3,39 +3,110 @@ import colors
 import menucli as menu
 import mido
 import logo
-import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore
 import serial
 import serial.tools.list_ports
-
+import struct
+import pyqtgraph as pg
+from pyqtgraph.Qt import QtCore
 mido.set_backend('mido.backends.pygame') # temporal, for window test cus i hate compiling there
+import signal
+from pyqtgraph.Qt import QtCore, QtGui
 
 midi_input = None
 serial_output : serial.Serial = None
+window = None
+stream_buffer = bytearray()
 
-def make_window():
-    win = pg.GraphicsLayoutWidget(show=True)
-    win.setWindowTitle("SynthTracer")
+def create_window():
+    if not is_serial_valid() or not is_midi_valid() : return
+    print("Press Control + C to stop")
+    global window, app
+    window = pg.GraphicsLayoutWidget(show=True)
+    window.setWindowTitle("SynthTracer")
     app = pg.mkQApp("SynthTracer")
+    oscilloscope.link_window(window)
+def close_window():
+    if not serial_output : return
+    global window
+    window.close()
+
 
 def serialTX():
+    message = midi_input.poll()
+    if message:
+        try: serial_output.write(message.bytes())
+        except Exception :
+            colors.colorprint("[ERR] Disconnected!","red")
+            return
+
+
+def serialRX():
+    global stream_buffer
+
+    waiting = serial_output.in_waiting
+    if waiting == 0:
+        return
+
+    stream_buffer.extend(
+        serial_output.read(waiting)
+    )
+
+    processed = 0
+    while processed + 3 < len(stream_buffer):
+        if stream_buffer[processed] != 255:
+            processed += 1
+            continue
+        channel = stream_buffer[processed + 1]
+        if channel < oscilloscope.settings["channels_amount"]:
+            sample = (
+                stream_buffer[processed + 2] << 8
+                | stream_buffer[processed + 3]
+            )
+
+            if sample & 0x8000:
+                sample -= 65536
+            oscilloscope.channels[channel].append_sample(sample)
+        processed += 4
+    if processed:
+        del stream_buffer[:processed]
+
+def handle_IO():
+    # 1. Custom signal handler to cleanly raise a KeyboardInterrupt
+    def sigint_handler(sig, frame):
+        # This breaks pg.exec() and raises the exception Python expects
+        pg.mkQApp().quit() 
+        raise KeyboardInterrupt
+
+    # Register our clean handler instead of the nuclear default one
+    signal.signal(signal.SIGINT, sigint_handler)
+
+    timer = QtCore.QTimer()
+    timer.timeout.connect(serialRX)
+    timer.timeout.connect(serialTX)
+    timer.timeout.connect(oscilloscope.update_plots)
+    fps = 60
+    timer.start(int(1000 / fps))
+    
+    interrupt_timer = QtCore.QTimer()
+    interrupt_timer.start(100)
+    interrupt_timer.timeout.connect(lambda: None) 
+    
     try:
-        while True:
-            message = midi_input.poll()
-            if message:
-                try: serial_output.write(message.bytes())
-                except Exception :
-                    colors.colorprint("[ERR] Disconnected!","red")
-                    return
-    except KeyboardInterrupt: return
+        pg.exec()
+    except KeyboardInterrupt:
+        # Catch it here if it happens inside pg.exec()
+        pass
+    finally:
+        timer.stop()
+        interrupt_timer.stop()
+        # 2. Reset back to Python's default behavior so the main menu can handle SIGINT again
+        signal.signal(signal.SIGINT, signal.default_int_handler)
 
 def is_serial_valid():
-    global serial_output
-
-    try :
-        serial_output.write(255)
-        return True
-    except Exception : return False
+    return (
+        serial_output is not None
+        and serial_output.is_open
+    )
 
 
 def is_midi_valid():
@@ -75,25 +146,25 @@ def get_midi_port():
 
 def configure_IO():
     global midi_input, serial_output
+    if not is_serial_valid():
+        serial_port = get_serial_port()
+        baudrate = menu._ask_value(int,"Enter a baudrate (set to 0 if CDC) : ")
+        serial_output = serial.Serial(serial_port,baudrate, timeout=0)
+    if not is_midi_valid():
+        print()
+        midi_port = get_midi_port()
+        midi_input = mido.open_input(midi_port)
 
-    try:
-        if not is_serial_valid():
-            serial_port = get_serial_port()
-            baudrate = menu._ask_value(int,"Enter a baudrate (set to 0 if CDC) : ")
-            serial_output = serial.Serial(serial_port,baudrate)
-        if not is_midi_valid():
-            print()
-            midi_port = get_midi_port()
-            midi_input = mido.open_input(midi_port)
-    except KeyboardInterrupt: return
 
 def handle_oscilloscope():
-    configure_IO()
-    print()
-    print("Press Control + C to stop")
-    make_window()
-    serialTX()
-    print("\n")
+    try:
+        configure_IO()
+        print()
+        create_window()
+        handle_IO()
+        close_window()
+        print("\n")
+    except KeyboardInterrupt: return
 
 def set_and_store_settings(index, value = None):
     match index:
@@ -130,13 +201,15 @@ MainMenu = menu.Menu([
 ],
 None, False)
 
-
+oscilloscope.init_settings()
 menu.goToMenu(MainMenu)
 colors.colorprint(logo.logo,'green')
 print("SynthTracer by Guillermo Beckers (Mejolov24 on github)")
 print("oscilloscope tool for sending serial midi and plotting incoming audio data")
 while menu.render():
-    print("\033[H\033[2J")
-    colors.colorprint(logo.logo,'green')
+    try:
+        print("\033[H\033[2J")
+        colors.colorprint(logo.logo,'green')
+    except KeyboardInterrupt: continue
 
 print("Thanks for using!")

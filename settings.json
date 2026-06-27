@@ -1,9 +1,9 @@
 {
-    "buffer_size": 213,
-    "min_val": 5,
-    "max_val": 6,
-    "rx_rate": 2,
-    "data_window_ms": 1000,
-    "channels_amount": 4,
+    "buffer_size": 400,
+    "min_val": -32768,
+    "max_val": 32767,
+    "rx_rate": 8000,
+    "data_window_ms": 50,
+    "channels_amount": 16,
     "channel_names": {}
 }

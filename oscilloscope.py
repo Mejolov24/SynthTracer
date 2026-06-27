@@ -2,6 +2,8 @@ import sys
 from pathlib import Path
 import json
 import numpy as np
+import pyqtgraph as pg
+from pyqtgraph.Qt import QtCore
 
 script_path = Path(__file__).parent.resolve()
 settings_path = script_path / "settings.json"
@@ -14,7 +16,7 @@ DEFAULT_SETTINGS = {
     "max_val": 32767,
     "rx_rate": 8000,
     "data_window_ms": 50,
-    "channels_amount": 15,
+    "channels_amount": 16,
     "channel_names": {}
 }
 
@@ -30,6 +32,8 @@ class Channel:
         self.name = f"Channel {channel_id}"
         self.buffer = np.zeros(Channel.buffer_size)
         self.buffer_data_amount : int = 0
+        self.curve = None
+        self.ptr = 0
     def set_name(self,name):
         self.name = name
         settings["channel_names"][str(self.id)] = name
@@ -37,18 +41,32 @@ class Channel:
         self.buffer_data_amount = 0
         self.buffer.fill(0)
     def get_buffer(self):
-        return self.buffer
-    def append_sample(self,value):
-        previous_sample = self.buffer[-1]
+        return np.concatenate((self.buffer[self.ptr:], self.buffer[:self.ptr]))
 
-        self.bufffer = np.roll(self.buffer,-1)
-        self.buffer[-1] = value
+    def append_sample(self, value):
+        self.buffer[self.ptr] = value
+        self.ptr = (self.ptr + 1) % Channel.buffer_size
 
-        if self.buffer_data_amount == self.buffer_size and (previous_sample <= 0 and value > 0):
-            self.clear_buffer()
-        else:
-            self.buffer_data_amount += 1
+    def update_ui(self):
+        if self.curve is not None:
+            self.curve.setData(self.get_buffer())
 
+def update_plots():
+    global channels
+    for channel in channels:
+        channel.update_ui()
+
+def link_window(layout_widget: pg.GraphicsLayoutWidget):
+    global channels
+    for index, channel in enumerate(channels):
+        plot_view = layout_widget.addPlot(title=channel.name)
+        plot_view.setYRange(Channel.min_val, Channel.max_val)
+        plot_view.setXRange(0, Channel.buffer_size)
+        plot_view.showGrid(x=True, y=True, alpha=0.3)
+        color = pg.intColor(channel.id,hues=(len(channels)))
+        channel.curve = plot_view.plot(pen=pg.mkPen(color, width=1.5), name=channel.name)
+        if (index + 1) % 4 == 0:
+            layout_widget.nextRow()
 def init_settings():
     global settings, channels
 
