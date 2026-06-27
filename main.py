@@ -125,8 +125,12 @@ def handle_IO():
     # Main thread handles graphics ticks
     timer = QtCore.QTimer()
     timer.timeout.connect(update_gui_and_consume_queue)
-    fps = 60
-    timer.start(int(1000 / fps))
+    frame_ms = (
+        oscilloscope.Channel.buffer_size
+        / oscilloscope.settings["rx_rate"]
+    ) * 1000
+
+    timer.start(int(frame_ms))
     
     interrupt_timer = QtCore.QTimer()
     interrupt_timer.start(100)

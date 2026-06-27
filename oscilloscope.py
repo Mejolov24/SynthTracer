@@ -34,6 +34,8 @@ class Channel:
         self.buffer_data_amount : int = 0
         self.curve = None
         self.ptr = 0
+        self.frame_ready = False
+        self.write_pos = 0
     def set_name(self,name):
         self.name = name
         settings["channel_names"][str(self.id)] = name
@@ -41,7 +43,20 @@ class Channel:
         self.buffer_data_amount = 0
         self.buffer.fill(0)
     def get_buffer(self):
-        return np.concatenate((self.buffer[self.ptr:], self.buffer[:self.ptr]))
+        data = np.concatenate((
+            self.buffer[self.ptr:],
+            self.buffer[:self.ptr]
+        ))
+
+        samples_per_frame = (
+            Channel.rx_rate / 60.0
+        )
+
+        sync_offset = int(
+            self.ptr % samples_per_frame
+        )
+
+        return np.roll(data, -sync_offset)
 
     def append_sample(self, value):
         self.buffer[self.ptr] = value
@@ -49,7 +64,7 @@ class Channel:
 
     def update_ui(self):
         if self.curve is not None:
-            self.curve.setData(self.get_buffer())
+            self.curve.setData(self.buffer)
 
 def update_plots():
     global channels
@@ -64,7 +79,7 @@ def link_window(layout_widget: pg.GraphicsLayoutWidget):
         plot_view.setXRange(0, Channel.buffer_size)
         plot_view.showGrid(x=True, y=True, alpha=0.3)
         color = pg.intColor(channel.id,hues=(len(channels)))
-        channel.curve = plot_view.plot(pen=pg.mkPen(color, width=1.5), name=channel.name)
+        channel.curve = plot_view.plot(pen=pg.mkPen(color, width=1.5), name=channel.name,antialias=True)
         if (index + 1) % 4 == 0:
             layout_widget.nextRow()
 def init_settings():
@@ -76,7 +91,14 @@ def init_settings():
     with open(settings_path, "rb") as file:
         settings = json.load(file)
     
-    Channel.buffer_size = settings["buffer_size"]
+    window_ms = settings["data_window_ms"]
+
+    Channel.buffer_size = int(
+        settings["rx_rate"]
+        * window_ms
+        / 1000
+    )
+
     Channel.min_val = settings["min_val"]
     Channel.max_val = settings["max_val"]
     Channel.rx_rate = settings["rx_rate"]
