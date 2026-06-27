@@ -11,6 +11,11 @@ from pyqtgraph.Qt import QtCore
 mido.set_backend('mido.backends.pygame') # temporal, for window test cus i hate compiling there
 import signal
 from pyqtgraph.Qt import QtCore, QtGui
+import threading
+import queue
+
+sample_queue = queue.Queue()
+io_running = False
 
 midi_input = None
 serial_output : serial.Serial = None
@@ -40,17 +45,18 @@ def serialTX():
             return
 
 
+
 def serialRX():
     global stream_buffer
 
     waiting = serial_output.in_waiting
     if waiting == 0:
-        return
+        return []
 
     stream_buffer.extend(
         serial_output.read(waiting)
     )
-
+    parsed_samples = []
     processed = 0
     while processed + 3 < len(stream_buffer):
         if stream_buffer[processed] != 255:
@@ -65,25 +71,60 @@ def serialRX():
 
             if sample & 0x8000:
                 sample -= 65536
-            oscilloscope.channels[channel].append_sample(sample)
+            parsed_samples.append((channel, sample))
         processed += 4
     if processed:
         del stream_buffer[:processed]
+    return parsed_samples
+def background_io_loop():
+    """Continuous worker thread that calls your original functions."""
+    global io_running
+    while io_running:
+        # 1. Process outbound MIDI
+        serialTX()
+        
+        # 2. Process inbound Serial and harvest parsed data
+        new_samples = serialRX()
+        for channel, sample in new_samples:
+            sample_queue.put((channel, sample))
+            
+        # Give the CPU a tiny breather
+        threading.Event().wait(0.001)
+
+def update_gui_and_consume_queue():
+    """Runs at 60Hz on the MAIN thread to safely digest the queue data."""
+    while not sample_queue.empty():
+        try:
+            channel, sample = sample_queue.get_nowait()
+            oscilloscope.channels[channel].append_sample(sample)
+        except queue.Empty:
+            break
+            
+    # Redraw everything on screen
+    oscilloscope.update_plots()
 
 def handle_IO():
-    # 1. Custom signal handler to cleanly raise a KeyboardInterrupt
+    global io_running
+    
     def sigint_handler(sig, frame):
-        # This breaks pg.exec() and raises the exception Python expects
         pg.mkQApp().quit() 
         raise KeyboardInterrupt
 
-    # Register our clean handler instead of the nuclear default one
     signal.signal(signal.SIGINT, sigint_handler)
 
+    # Reset state
+    while not sample_queue.empty():
+        try: sample_queue.get_nowait()
+        except queue.Empty: break
+
+    # Spin up background execution loop
+    io_running = True
+    io_thread = threading.Thread(target=background_io_loop, daemon=True)
+    io_thread.start()
+
+    # Main thread handles graphics ticks
     timer = QtCore.QTimer()
-    timer.timeout.connect(serialRX)
-    timer.timeout.connect(serialTX)
-    timer.timeout.connect(oscilloscope.update_plots)
+    timer.timeout.connect(update_gui_and_consume_queue)
     fps = 60
     timer.start(int(1000 / fps))
     
@@ -94,12 +135,12 @@ def handle_IO():
     try:
         pg.exec()
     except KeyboardInterrupt:
-        # Catch it here if it happens inside pg.exec()
         pass
     finally:
+        io_running = False
+        io_thread.join(timeout=1.0)
         timer.stop()
         interrupt_timer.stop()
-        # 2. Reset back to Python's default behavior so the main menu can handle SIGINT again
         signal.signal(signal.SIGINT, signal.default_int_handler)
 
 def is_serial_valid():
