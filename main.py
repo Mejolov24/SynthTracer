@@ -26,6 +26,15 @@ buffers = {
     for i in range(oscilloscope.settings["channels_amount"])
 }
 
+trigger_pos = {
+    i: 0
+    for i in range(oscilloscope.settings["channels_amount"])
+}
+
+write_pos = {
+    i: 0
+    for i in range(oscilloscope.settings["channels_amount"])
+}
 def create_window():
     if not is_serial_valid() or not is_midi_valid() : return
     print("Press Control + C to stop")
@@ -57,9 +66,7 @@ def serialRX():
     if waiting == 0:
         return []
 
-    stream_buffer.extend(
-        serial_output.read(waiting)
-    )
+    stream_buffer.extend(serial_output.read(waiting))
     parsed_samples = []
     processed = 0
     while processed + 3 < len(stream_buffer):
@@ -98,9 +105,17 @@ def background_io_loop():
                     continue
 
                 buf = buffers[channel]
-                buf[:-1] = buf[1:]
-                buf[-1] = sample
+                prev_pos = (write_pos[channel] - 1) % len(buf)
+                prev = buf[prev_pos]
+                pos = write_pos[channel]
+                buf[pos] = sample
+                write_pos[channel] = (pos + 1) % len(buf)
+                if prev < 0 and sample >= 0:
+                    trigger_pos[channel] = write_pos[channel]
+
                 dirty_channels.add(channel)
+
+
 
 
 
@@ -111,15 +126,12 @@ def draw():
             return
 
         updated = list(dirty_channels)
-
         dirty_channels.clear()
 
     for channel in updated:
-
-        oscilloscope.channels[
-            channel
-        ].set_data(
-            buffers[channel])
+        pos = trigger_pos[channel]
+        view = np.concatenate((buffers[channel][pos:], buffers[channel][:pos]))
+        oscilloscope.channels[channel].set_data(view)
 
 def sigint_handler(sig, frame):
     global io_running
