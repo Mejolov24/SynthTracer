@@ -22,20 +22,8 @@ data_lock = threading.Lock()
 oscilloscope.init_settings()
 
 buffers = {
-    i: np.zeros(
-        oscilloscope.Channel.buffer_size,
-        dtype=np.int16
-    )
-    for i in range(
-        oscilloscope.settings["channels_amount"]
-    )
-}
-
-positions = {
-    i: 0
-    for i in range(
-        oscilloscope.settings["channels_amount"]
-    )
+    i: np.zeros(oscilloscope.Channel.buffer_size,dtype=np.int16)
+    for i in range(oscilloscope.settings["channels_amount"])
 }
 
 def create_window():
@@ -108,10 +96,12 @@ def background_io_loop():
             for channel, sample in samples:
                 if channel >= len(buffers):
                     continue
-                pos = positions[channel]
-                buffers[channel][pos] = sample
-                positions[channel] = (pos + 1) % oscilloscope.Channel.buffer_size
+
+                buf = buffers[channel]
+                buf[:-1] = buf[1:]
+                buf[-1] = sample
                 dirty_channels.add(channel)
+
 
 
 def draw():
@@ -125,9 +115,11 @@ def draw():
         dirty_channels.clear()
 
     for channel in updated:
-        pos = positions[channel]
-        view = np.concatenate((buffers[channel][pos:], buffers[channel][:pos]))
-        oscilloscope.channels[channel].set_data(view)
+
+        oscilloscope.channels[
+            channel
+        ].set_data(
+            buffers[channel])
 
 def sigint_handler(sig, frame):
     global io_running
