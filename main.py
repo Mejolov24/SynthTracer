@@ -10,25 +10,21 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore
 mido.set_backend('mido.backends.pygame') # temporal, for window test cus i hate compiling there
 import signal
-from pyqtgraph.Qt import QtCore, QtGui
 import threading
-import queue
-
-sample_queue = queue.Queue()
 io_running = False
 
 midi_input = None
 serial_output : serial.Serial = None
 window = None
 stream_buffer = bytearray()
+dirty_channels = set()
+data_lock = threading.Lock()
+oscilloscope.init_settings()
 
-class WorkerSignals(QtCore.QObject):
-    data_ready = QtCore.Signal(int, np.ndarray)
-
-worker_signals = WorkerSignals()
-
-def update_plot_callback(channel : int,data):
-    oscilloscope.channels[channel].setData(data)
+buffers = {
+    i: np.zeros(oscilloscope.Channel.buffer_size,dtype=np.int16)
+    for i in range(oscilloscope.settings["channels_amount"])
+}
 
 def create_window():
     if not is_serial_valid() or not is_midi_valid() : return
@@ -37,7 +33,6 @@ def create_window():
     window = pg.GraphicsLayoutWidget(show=True)
     window.setWindowTitle("SynthTracer")
     app = pg.mkQApp("SynthTracer")
-    worker_signals.data_ready.connect(update_plot)
     oscilloscope.link_window(window)
 def close_window():
     if not serial_output : return
@@ -85,21 +80,47 @@ def serialRX():
     if processed:
         del stream_buffer[:processed]
     return parsed_samples
+
 def background_io_loop():
-    global io_running, buffer_size
-    buffers = {i: [] for i in range(oscilloscope.settings["channels_amount"])}
+    global io_running
+
     while io_running:
         serialTX()
-        new_samples = serialRX()
-        for channel, sample in new_samples:
-            if channel not in buffers: continue
-            buffers[channel].append(sample)
-            if len(buffers[channel]) >= oscilloscope.Channel.buffer_size:
-                worker_signals.data_ready.emit(channel,np.array(buffers[channel]))
-                buffers[channel] = []
+        samples = serialRX()
 
-def update_plot(channel_id, data):
-    oscilloscope.channels[channel_id].set_data(data)
+        if not samples: # let the poort cpu rest while there is no data
+            QtCore.QThread.msleep(1)
+            continue
+
+        with data_lock:
+            for channel, sample in samples:
+                if channel >= len(buffers):
+                    continue
+
+                buf = buffers[channel]
+                buf[:-1] = buf[1:]
+                buf[-1] = sample
+                dirty_channels.add(channel)
+
+
+
+def draw():
+    with data_lock:
+
+        if not dirty_channels:
+            return
+
+        updated = list(dirty_channels)
+
+        dirty_channels.clear()
+
+    for channel in updated:
+
+        oscilloscope.channels[
+            channel
+        ].set_data(
+            buffers[channel])
+
 def sigint_handler(sig, frame):
     global io_running
     io_running = False
@@ -111,6 +132,11 @@ def handle_IO():
     io_running = True
     io_thread = threading.Thread(target=background_io_loop, daemon=True)
     io_thread.start()
+
+    timer = QtCore.QTimer()
+    timer.timeout.connect(draw)
+    timer.start(16) # ~60 FPS
+
     pg.exec()
     io_running = False
     io_thread.join(timeout=1.0)
@@ -195,7 +221,6 @@ def set_and_store_settings(index, value = None):
             oscilloscope.settings["max_val"] = value
     oscilloscope.sync_json_settings()
     oscilloscope.init_settings()
-
 ConfigurationMenu = menu.Menu([
     menu.MenuItem("Sampling Rate", int, "Enter a rate in hz : "),
     menu.MenuItem("Cycles", int, "Enter a number of cycles : "),

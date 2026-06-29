@@ -25,42 +25,98 @@ def calculate_buffer(sampling_rate : int, cycles : int, frecuency : int):
 
 
 class Channel:
-    # globals
+
     buffer_size = 400
     min_val = -32768
     max_val = 32767
-    rx_rate = 8000
 
     def __init__(self, channel_id):
+
         self.id = channel_id
         self.name = f"Channel {channel_id}"
-        self.buffer = np.zeros(Channel.buffer_size)
+
+        self.buffer = np.zeros(
+            Channel.buffer_size,
+            dtype=np.int16
+        )
+
         self.curve = None
+
     def set_name(self,name):
         self.name = name
-        settings["channel_names"][str(self.id)] = name
-    def clear_buffer(self):
-        self.buffer_data_amount = 0
-        self.buffer.fill(0)
-    def set_data(self, data : np.ndarray):
-        self.buffer = data
-        self.update_ui()
+        settings["channel_names"][
+            str(self.id)
+        ] = name
 
-    def update_ui(self):
-        if self.curve is not None:
-            self.curve.setData(self.buffer)
+    def set_data(self,data):
 
-def link_window(layout_widget: pg.GraphicsLayoutWidget):
+        self.buffer[:] = data
+
+        if self.curve:
+            self.curve.setData(
+                self.buffer
+            )
+
+def link_window(layout_widget):
     global channels
+
+    pg.setConfigOptions(
+        antialias=False,
+        useOpenGL=True
+    )
+
     for index, channel in enumerate(channels):
-        plot_view = layout_widget.addPlot(title=channel.name)
-        plot_view.setYRange(Channel.min_val, Channel.max_val)
-        plot_view.setXRange(0, Channel.buffer_size)
-        plot_view.showGrid(x=True, y=True, alpha=0.3)
-        color = pg.intColor(channel.id,hues=(len(channels)))
-        channel.curve = plot_view.plot(pen=pg.mkPen(color, width=1.5), name=channel.name)
+
+        plot = layout_widget.addPlot(
+            title=channel.name
+        )
+
+        plot.setDownsampling(
+            mode="peak"
+        )
+
+        plot.setClipToView(True)
+
+        plot.disableAutoRange()
+
+        plot.showGrid(
+            x=True,
+            y=True,
+            alpha=0.3
+        )
+
+        plot.setRange(
+            xRange=[
+                0,
+                Channel.buffer_size
+            ],
+            yRange=[
+                Channel.min_val,
+                Channel.max_val
+            ],
+            padding=0
+        )
+
+        color = pg.intColor(
+            channel.id,
+            hues=len(channels)
+        )
+
+        channel.curve = plot.plot(
+            pen=pg.mkPen(
+                color,
+                width=1
+            )
+        )
+
         if (index + 1) % 4 == 0:
             layout_widget.nextRow()
+
+
+
+
+
+
 def init_settings():
     global settings, channels
 
