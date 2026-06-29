@@ -5,7 +5,7 @@ import mido
 import logo
 import serial
 import serial.tools.list_ports
-import struct
+import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore
 mido.set_backend('mido.backends.pygame') # temporal, for window test cus i hate compiling there
@@ -22,6 +22,14 @@ serial_output : serial.Serial = None
 window = None
 stream_buffer = bytearray()
 
+class WorkerSignals(QtCore.QObject):
+    data_ready = QtCore.Signal(int, np.ndarray)
+
+worker_signals = WorkerSignals()
+
+def update_plot_callback(channel : int,data):
+    oscilloscope.channels[channel].setData(data)
+
 def create_window():
     if not is_serial_valid() or not is_midi_valid() : return
     print("Press Control + C to stop")
@@ -29,6 +37,7 @@ def create_window():
     window = pg.GraphicsLayoutWidget(show=True)
     window.setWindowTitle("SynthTracer")
     app = pg.mkQApp("SynthTracer")
+    worker_signals.data_ready.connect(update_plot)
     oscilloscope.link_window(window)
 def close_window():
     if not serial_output : return
@@ -77,71 +86,35 @@ def serialRX():
         del stream_buffer[:processed]
     return parsed_samples
 def background_io_loop():
-    """Continuous worker thread that calls your original functions."""
-    global io_running
+    global io_running, buffer_size
+    buffers = {i: [] for i in range(oscilloscope.settings["channels_amount"])}
     while io_running:
-        # 1. Process outbound MIDI
         serialTX()
-        
-        # 2. Process inbound Serial and harvest parsed data
         new_samples = serialRX()
         for channel, sample in new_samples:
-            sample_queue.put((channel, sample))
-            
-        # Give the CPU a tiny breather
-        threading.Event().wait(0.001)
+            if channel not in buffers: continue
+            buffers[channel].append(sample)
+            if len(buffers[channel]) >= oscilloscope.Channel.buffer_size:
+                worker_signals.data_ready.emit(channel,np.array(buffers[channel]))
+                buffers[channel] = []
 
-def update_gui_and_consume_queue():
-    """Runs at 60Hz on the MAIN thread to safely digest the queue data."""
-    while not sample_queue.empty():
-        try:
-            channel, sample = sample_queue.get_nowait()
-            oscilloscope.channels[channel].append_sample(sample)
-        except queue.Empty:
-            break
-            
-    # Redraw everything on screen
-    oscilloscope.update_plots()
-
+def update_plot(channel_id, data):
+    oscilloscope.channels[channel_id].set_data(data)
+def sigint_handler(sig, frame):
+    global io_running
+    io_running = False
+    pg.mkQApp().quit() 
 def handle_IO():
     global io_running
-    
-    def sigint_handler(sig, frame):
-        pg.mkQApp().quit() 
-        raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, sigint_handler)
-
-    # Reset state
-    while not sample_queue.empty():
-        try: sample_queue.get_nowait()
-        except queue.Empty: break
-
-    # Spin up background execution loop
     io_running = True
     io_thread = threading.Thread(target=background_io_loop, daemon=True)
     io_thread.start()
-
-    # Main thread handles graphics ticks
-    timer = QtCore.QTimer()
-    timer.timeout.connect(update_gui_and_consume_queue)
-    fps = 60
-    timer.start(int(1000 / fps))
-    
-    interrupt_timer = QtCore.QTimer()
-    interrupt_timer.start(100)
-    interrupt_timer.timeout.connect(lambda: None) 
-    
-    try:
-        pg.exec()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        io_running = False
-        io_thread.join(timeout=1.0)
-        timer.stop()
-        interrupt_timer.stop()
-        signal.signal(signal.SIGINT, signal.default_int_handler)
+    pg.exec()
+    io_running = False
+    io_thread.join(timeout=1.0)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
 
 def is_serial_valid():
     return (
@@ -208,26 +181,24 @@ def handle_oscilloscope():
     except KeyboardInterrupt: return
 
 def set_and_store_settings(index, value = None):
+    index = index + 1
     match index:
-        case 0:
-            oscilloscope.settings["buffer_size"] = value
         case 1:
-            oscilloscope.settings["rx_rate"] = value
+            oscilloscope.settings["sampling_rate"] = value
         case 2:
-            oscilloscope.settings["data_window_ms"] = value
+            oscilloscope.settings["wave_cycles"] = value
         case 3:
             oscilloscope.settings["channels_amount"] = value
         case 4:
             oscilloscope.settings["min_val"] = value
         case 5:
             oscilloscope.settings["max_val"] = value
-
     oscilloscope.sync_json_settings()
+    oscilloscope.init_settings()
 
 ConfigurationMenu = menu.Menu([
-    menu.MenuItem("Buffer size", int, "Enter a size : "),
-    menu.MenuItem("Rx rate", int, "Enter a rate in hz : "),
-    menu.MenuItem("Data Window", int, "Enter a window in ms : "),
+    menu.MenuItem("Sampling Rate", int, "Enter a rate in hz : "),
+    menu.MenuItem("Cycles", int, "Enter a number of cycles : "),
     menu.MenuItem("Channels amount", int, "Enter some channels amount : "),
     menu.MenuItem("Minimum value", int, "Enter a value : "),
     menu.MenuItem("Maximum value", int, "Enter a value : "),

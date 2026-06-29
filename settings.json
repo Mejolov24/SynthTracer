@@ -1,9 +1,8 @@
 {
-    "buffer_size": 400,
+    "sampling_rate": 8000,
+    "wave_cycles": 8,
     "min_val": -32768,
     "max_val": 32767,
-    "rx_rate": 8000,
-    "data_window_ms": 50,
     "channels_amount": 16,
     "channel_names": {}
 }
