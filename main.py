@@ -1,3 +1,4 @@
+# i genuinely hate python, i might rewrite this on C++
 import oscilloscope
 import colors
 import menucli as menu
@@ -8,7 +9,6 @@ import serial.tools.list_ports
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore
-mido.set_backend('mido.backends.pygame') # temporal, for window test cus i hate compiling there
 import signal
 import threading
 io_running = False
@@ -20,6 +20,8 @@ stream_buffer = bytearray()
 dirty_channels = set()
 data_lock = threading.Lock()
 oscilloscope.init_settings()
+
+shutdown_requested = False
 
 buffers = {
     i: np.zeros(oscilloscope.Channel.buffer_size,dtype=np.int16)
@@ -36,9 +38,10 @@ write_pos = {
     for i in range(oscilloscope.settings["channels_amount"])
 }
 def create_window():
+    global window, app, shutdown_requested
+    shutdown_requested = False
     if not is_serial_valid() or not is_midi_valid() : return
     print("Press Control + C to stop")
-    global window, app
     window = pg.GraphicsLayoutWidget(show=True)
     window.setWindowTitle("SynthTracer")
     app = pg.mkQApp("SynthTracer")
@@ -50,19 +53,23 @@ def close_window():
 
 
 def serialTX():
+    global serial_output
     message = midi_input.poll()
     if message:
         try: serial_output.write(message.bytes())
         except Exception :
-            colors.colorprint("[ERR] Disconnected!","red")
-            return
+            serial_output = None
+            return Exception
 
 
 
 def serialRX():
-    global stream_buffer
-
-    waiting = serial_output.in_waiting
+    global stream_buffer, serial_output
+    try:
+        waiting = serial_output.in_waiting
+    except Exception :
+        serial_output = None
+        return Exception
     if waiting == 0:
         return []
 
@@ -92,8 +99,13 @@ def background_io_loop():
     global io_running
 
     while io_running:
-        serialTX()
+        serial = serialTX()
         samples = serialRX()
+        
+        if samples is Exception or serial is Exception:
+            io_running = False
+            colors.colorprint("[ERR] Disconnected!","red")
+            return
 
         if not samples: # let the poort cpu rest while there is no data
             QtCore.QThread.msleep(1)
@@ -116,10 +128,20 @@ def background_io_loop():
                 dirty_channels.add(channel)
 
 
-
+def sigint_handler(sig, frame):
+    global shutdown_requested
+    shutdown_requested = True
 
 
 def draw():
+    global shutdown_requested, io_running
+    if shutdown_requested:
+        io_running = False
+        pg.mkQApp().quit()
+        return
+    if not io_running:
+        pg.mkQApp().quit()
+        return
     with data_lock:
 
         if not dirty_channels:
@@ -133,26 +155,18 @@ def draw():
         view = np.concatenate((buffers[channel][pos:], buffers[channel][:pos]))
         oscilloscope.channels[channel].set_data(view)
 
-def sigint_handler(sig, frame):
-    global io_running
-    io_running = False
-    pg.mkQApp().quit() 
 def handle_IO():
     global io_running
 
-    signal.signal(signal.SIGINT, sigint_handler)
     io_running = True
     io_thread = threading.Thread(target=background_io_loop, daemon=True)
     io_thread.start()
-
+    signal.signal(signal.SIGINT, sigint_handler)
     timer = QtCore.QTimer()
     timer.timeout.connect(draw)
     timer.start(16) # ~60 FPS
 
     pg.exec()
-    io_running = False
-    io_thread.join(timeout=1.0)
-    signal.signal(signal.SIGINT, signal.default_int_handler)
 
 def is_serial_valid():
     return (
@@ -169,8 +183,10 @@ def is_midi_valid():
         and not midi_input.closed
     )
 
+
 def get_serial_port():
     serial_ports = serial.tools.list_ports.comports()
+    serial_ports = [p for p in serial_ports if not p.device.startswith('/dev/ttyS')]
     serial_ports_amount = len(serial_ports)
 
     print("Select a serial port")
