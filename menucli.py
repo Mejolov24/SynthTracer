@@ -31,12 +31,12 @@ def goToMenu(menu : Menu, append = False):
 def goBack():
     menu_stack.pop()
 
-def _ask_value(type : type, text : str, min = None, max = None):
+def ask_value(type : type, text : str, min = None, max = None):
     while True:
         while True:
             try:
                 try:answer = input(text)
-                except KeyboardInterrupt : return None
+                except KeyboardInterrupt : return KeyboardInterrupt
                 result = type(answer)
                 if (min == None and max == None) : return result
                 if (type == int):
@@ -53,8 +53,8 @@ def render():
     print(current_menu.separator)
     for index, item in enumerate(current_menu_items):
         print(index + int(not current_menu.zero_indexed), item.name)
-    selection_index : int = _ask_value(int, " Select an option : ",0 + int(not current_menu.zero_indexed),current_menu_length)
-    if (selection_index is None) :
+    selection_index : int = ask_value(int, " Select an option : ",0 + int(not current_menu.zero_indexed),current_menu_length)
+    if (selection_index == KeyboardInterrupt) :
         if (current_menu_length < 0): return False
         goBack()
         return render()
@@ -88,7 +88,7 @@ def render():
                 return False
 
         case _:
-            selection_value = _ask_value(selection.type, "  " + selection.value_name, selection.value_min, selection.value_max)
+            selection_value = ask_value(selection.type, "  " + selection.value_name, selection.value_min, selection.value_max)
             if (selection_value is None) : return render()
             callback(selection_value)
     return True

@@ -185,48 +185,58 @@ def is_midi_valid():
 
 
 def get_serial_port():
-    serial_ports = serial.tools.list_ports.comports()
-    serial_ports = [p for p in serial_ports if not p.device.startswith('/dev/ttyS')]
-    serial_ports_amount = len(serial_ports)
+    while True:
+        try:
+            serial_ports = serial.tools.list_ports.comports()
+            serial_ports = [p for p in serial_ports if not p.device.startswith('/dev/ttyS')]
+            serial_ports_amount = len(serial_ports)
 
-    print("Select a serial port")
-    if (serial_ports_amount == 0):
-        input("No serial ports detected! press enter to retry")
-        return get_serial_port()
-    for index, port in enumerate(serial_ports):
-        print(index, "", port)
-    port_id = menu._ask_value(int,"Enter port number : ", 0, serial_ports_amount - 1)
-    return str(serial_ports[port_id][0])
+            print("Select a serial port")
+            if (serial_ports_amount == 0):
+                input("No serial ports detected! press enter to retry")
+                continue
+            for index, port in enumerate(serial_ports):
+                print(index, "", port)
+            port_id = menu.ask_value(int,"Enter port number : ", 0, serial_ports_amount - 1)
+            if port_id == KeyboardInterrupt: return KeyboardInterrupt
+            return str(serial_ports[port_id][0])
+        except KeyboardInterrupt: return KeyboardInterrupt
 
 def get_midi_port():
-    midi_input_ports = mido.get_input_names()
-    midi_input_amount = len(midi_input_ports)
+    while True:
+        try:
+            midi_input_ports = mido.get_input_names()
+            midi_input_amount = len(midi_input_ports)
 
-    if (midi_input is not None) : return
-    print("Select a midi port")
-    if (midi_input_amount == 0):
-        input("No midi ports detected! press enter to refresh")
-        return get_midi_port()
-    for index, port in enumerate(midi_input_ports):
-        print(index, "", port)
-    port_id = menu._ask_value(int,"Enter port number : ", 0, midi_input_amount - 1)
-    return midi_input_ports[port_id]
-
+            if (midi_input is not None) : return
+            print("Select a midi port")
+            if (midi_input_amount == 0):
+                input("No midi ports detected! press enter to refresh")
+                continue
+            for index, port in enumerate(midi_input_ports):
+                print(index, "", port)
+            port_id = menu.ask_value(int,"Enter port number : ", 0, midi_input_amount - 1)
+            if port_id == KeyboardInterrupt: return KeyboardInterrupt
+            return midi_input_ports[port_id]
+        except KeyboardInterrupt: return KeyboardInterrupt
 def configure_IO():
     global midi_input, serial_output
     if not is_serial_valid():
         serial_port = get_serial_port()
-        baudrate = menu._ask_value(int,"Enter a baudrate (set to 0 if CDC) : ")
+        if serial_port is KeyboardInterrupt: return KeyboardInterrupt
+        baudrate = menu.ask_value(int,"Enter a baudrate (set to 0 if CDC) : ")
+        if baudrate == KeyboardInterrupt : return KeyboardInterrupt
         serial_output = serial.Serial(serial_port,baudrate, timeout=0)
     if not is_midi_valid():
         print()
         midi_port = get_midi_port()
+        if midi_port == KeyboardInterrupt : return KeyboardInterrupt
         midi_input = mido.open_input(midi_port)
-
+    return True
 
 def handle_oscilloscope():
     try:
-        configure_IO()
+        if configure_IO() == KeyboardInterrupt: return
         print()
         create_window()
         handle_IO()
