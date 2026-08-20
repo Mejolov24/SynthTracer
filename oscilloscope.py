@@ -26,7 +26,7 @@ def calculate_buffer(sampling_rate : int, cycles : int, frecuency : int):
 
 class Channel:
 
-    buffer_size = 400
+    buffer_size = 256
     min_val = -32768
     max_val = 32767
 
@@ -48,14 +48,9 @@ class Channel:
             str(self.id)
         ] = name
 
-    def set_data(self,data):
-
-        self.buffer[:] = data
-
-        if self.curve:
-            self.curve.setData(
-                self.buffer
-            )
+    def set_data(self, data):
+        np.copyto(self.buffer, data)
+        self.curve.setData(self.buffer, _callSync="off")
 
 def link_window(layout_widget):
     global channels
@@ -72,18 +67,11 @@ def link_window(layout_widget):
         )
 
         plot.setDownsampling(
-            mode="peak"
+            mode="peak",
+            auto=True
         )
-
-        plot.setClipToView(True)
 
         plot.disableAutoRange()
-
-        plot.showGrid(
-            x=True,
-            y=True,
-            alpha=0.3
-        )
 
         plot.setRange(
             xRange=[
@@ -136,7 +124,7 @@ def init_settings():
 
     for i in range(settings["channels_amount"]):
         ch = Channel(i)
-        ch.buffer = np.zeros(Channel.buffer_size)
+        ch.buffer = np.zeros(Channel.buffer_size, dtype=np.int16)
         if str(i) in saved_names:
             ch.set_name(saved_names[str(i)])
         channels.append(ch)

@@ -11,5 +11,4 @@ dependencies = [
     "pyserial>=3.5",
     "pyside6>=6.11.1",
     "python-rtmidi>=1.5.8",
-    "serial>=0.0.97",
 ]

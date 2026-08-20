@@ -1,4 +1,4 @@
-# i genuinely hate python, i might rewrite this on C++
+# new
 import oscilloscope
 import colors
 import menucli as menu
@@ -11,6 +11,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore
 import signal
 import threading
+import time
 io_running = False
 
 midi_input = None
@@ -23,20 +24,16 @@ oscilloscope.init_settings()
 
 shutdown_requested = False
 
+latest_frame = None
+new_frame = False
+frame_counter = 0
+drawn_frame_counter = -1
+
 buffers = {
     i: np.zeros(oscilloscope.Channel.buffer_size,dtype=np.int16)
     for i in range(oscilloscope.settings["channels_amount"])
 }
 
-trigger_pos = {
-    i: 0
-    for i in range(oscilloscope.settings["channels_amount"])
-}
-
-write_pos = {
-    i: 0
-    for i in range(oscilloscope.settings["channels_amount"])
-}
 def create_window():
     global window, app, shutdown_requested
     shutdown_requested = False
@@ -54,79 +51,122 @@ def close_window():
 
 def serialTX():
     global serial_output
-    message = midi_input.poll()
-    if message:
-        try: serial_output.write(message.bytes())
-        except Exception :
+    # Drain all available MIDI messages immediately so they don't queue up
+    while True:
+        message = midi_input.poll()
+        if not message:
+            break
+        try:
+            serial_output.write(message.bytes())
+        except Exception:
             serial_output = None
             return Exception
 
 
+frame_lock = threading.Lock()
 
 def serialRX():
-    global stream_buffer, serial_output
+    global stream_buffer, serial_output, latest_frame, frame_counter, new_frame
+
     try:
         waiting = serial_output.in_waiting
-    except Exception :
+        if waiting:
+            stream_buffer.extend(serial_output.read(waiting))
+    except Exception:
         serial_output = None
-        return Exception
-    if waiting == 0:
-        return []
+        return False
 
-    stream_buffer.extend(serial_output.read(waiting))
-    parsed_samples = []
-    processed = 0
-    while processed + 3 < len(stream_buffer):
-        if stream_buffer[processed] != 255:
-            processed += 1
+    buffer_size = oscilloscope.Channel.buffer_size
+    channel_amount = oscilloscope.settings["channels_amount"]
+
+    channel_bytes = buffer_size * 2
+    packet_size = 3 + channel_bytes
+
+    if not hasattr(serialRX, "current_frame"):
+        serialRX.current_frame = np.zeros(
+            (channel_amount, buffer_size),
+            dtype=np.int16
+        )
+        serialRX.received_channels = 0
+
+    offset = 0
+    buffer_length = len(stream_buffer)
+
+    while buffer_length - offset >= packet_size:
+
+        # 1. C-Optimized Header Search
+        header_idx = stream_buffer.find(b'\xAA\x55', offset)
+        
+        if header_idx == -1:
+            # Header not found. Discard garbage but keep the very last byte
+            # just in case it is 0xAA waiting for its 0x55 counterpart.
+            offset = max(0, buffer_length - 1)
+            break
+            
+        if header_idx != offset:
+            offset = header_idx
+            # After jumping to the header, ensure we still have a full packet
+            if buffer_length - offset < packet_size:
+                break
+
+        channel_id = stream_buffer[offset + 2]
+
+        # Invalid channel handling
+        if channel_id >= channel_amount:
+            offset += 2 # Skip the current 0xAA to keep searching
             continue
-        channel = stream_buffer[processed + 1]
-        if channel < oscilloscope.settings["channels_amount"]:
-            sample = (
-                stream_buffer[processed + 2] << 8
-                | stream_buffer[processed + 3]
-            )
 
-            if sample & 0x8000:
-                sample -= 65536
-            parsed_samples.append((channel, sample))
-        processed += 4
-    if processed:
-        del stream_buffer[:processed]
-    return parsed_samples
+        data_start = offset + 3
+
+        # 2. Zero-Allocation Assignment
+        # np.frombuffer creates a view. Assigning it directly to the slice 
+        # copies the memory efficiently without a redundant .copy() heap allocation.
+        serialRX.current_frame[channel_id, :] = np.frombuffer(
+            stream_buffer,
+            dtype="<i2",
+            count=buffer_size,
+            offset=data_start
+        )
+
+        serialRX.received_channels |= (1 << channel_id)
+        offset += packet_size
+
+        # Complete frame
+        if serialRX.received_channels == (1 << channel_amount) - 1:
+            with frame_lock:
+                latest_frame = serialRX.current_frame.copy()
+                new_frame = True
+            serialRX.received_channels = 0
+
+    # 3. Safe Deletion and Spiral-of-Death Prevention
+    if offset > 0:
+        del stream_buffer[:offset]
+        
+    # Hard limit: If the buffer holds more than 10 full multi-channel frames,
+    # we are lagging. Flush the oldest data to forcefully catch up to real-time.
+    max_safe_buffer = packet_size * channel_amount * 10
+    if len(stream_buffer) > max_safe_buffer:
+        del stream_buffer[:- (packet_size * channel_amount * 2)]
+
+    return True
+
+
+
+
 
 def background_io_loop():
     global io_running
 
     while io_running:
-        serial = serialTX()
-        samples = serialRX()
-        
-        if samples is Exception or serial is Exception:
+
+        serial_result = serialTX()
+        rx_result = serialRX()
+
+        if serial_result is Exception or rx_result is False:
             io_running = False
-            colors.colorprint("[ERR] Disconnected!","red")
+            colors.colorprint("[ERR] Disconnected!", "red")
             return
-
-        if not samples: # let the poort cpu rest while there is no data
-            QtCore.QThread.msleep(1)
-            continue
-
-        with data_lock:
-            for channel, sample in samples:
-                if channel >= len(buffers):
-                    continue
-
-                buf = buffers[channel]
-                prev_pos = (write_pos[channel] - 1) % len(buf)
-                prev = buf[prev_pos]
-                pos = write_pos[channel]
-                buf[pos] = sample
-                write_pos[channel] = (pos + 1) % len(buf)
-                if prev < 0 and sample >= 0:
-                    trigger_pos[channel] = write_pos[channel]
-
-                dirty_channels.add(channel)
-
+        time.sleep(0.001)
 
 def sigint_handler(sig, frame):
     global shutdown_requested
@@ -135,36 +175,46 @@ def sigint_handler(sig, frame):
 
 def draw():
     global shutdown_requested, io_running
+    global latest_frame, new_frame
+
     if shutdown_requested:
         io_running = False
         pg.mkQApp().quit()
         return
+
     if not io_running:
         pg.mkQApp().quit()
         return
-    with data_lock:
 
-        if not dirty_channels:
+    with frame_lock:
+        if latest_frame is None or not new_frame:
             return
 
-        updated = list(dirty_channels)
-        dirty_channels.clear()
+        frame = latest_frame
+        new_frame = False
 
-    for channel in updated:
-        pos = trigger_pos[channel]
-        view = np.concatenate((buffers[channel][pos:], buffers[channel][:pos]))
-        oscilloscope.channels[channel].set_data(view)
+    for channel in range(frame.shape[0]):
+        oscilloscope.channels[channel].set_data(
+            frame[channel]
+        )
 
 def handle_IO():
     global io_running
 
     io_running = True
-    io_thread = threading.Thread(target=background_io_loop, daemon=True)
+
+    io_thread = threading.Thread(
+        target=background_io_loop,
+        daemon=True
+    )
     io_thread.start()
+
     signal.signal(signal.SIGINT, sigint_handler)
+
     timer = QtCore.QTimer()
+    timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
     timer.timeout.connect(draw)
-    timer.start(16) # ~60 FPS
+    timer.start(16)
 
     pg.exec()
 
@@ -248,18 +298,21 @@ def set_and_store_settings(index, value = None):
     index = index + 1
     match index:
         case 1:
-            oscilloscope.settings["sampling_rate"] = value
+            oscilloscope.settings["buffer_size"] = value
         case 2:
-            oscilloscope.settings["wave_cycles"] = value
+            oscilloscope.settings["sampling_rate"] = value
         case 3:
-            oscilloscope.settings["channels_amount"] = value
+            oscilloscope.settings["wave_cycles"] = value
         case 4:
-            oscilloscope.settings["min_val"] = value
+            oscilloscope.settings["channels_amount"] = value
         case 5:
+            oscilloscope.settings["min_val"] = value
+        case 6:
             oscilloscope.settings["max_val"] = value
     oscilloscope.sync_json_settings()
     oscilloscope.init_settings()
 ConfigurationMenu = menu.Menu([
+    menu.MenuItem("Buffer Size", int, "Enter a size in bytes : "),
     menu.MenuItem("Sampling Rate", int, "Enter a rate in hz : "),
     menu.MenuItem("Cycles", int, "Enter a number of cycles : "),
     menu.MenuItem("Channels amount", int, "Enter some channels amount : "),
