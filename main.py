@@ -329,6 +329,7 @@ MainMenu = menu.Menu([
 ],
 None, False)
 
+print("\033[?1049h", end="") ## enable alternate screen buffer
 oscilloscope.init_settings()
 menu.goToMenu(MainMenu)
 colors.colorprint(logo.logo,'green')
@@ -339,5 +340,5 @@ while menu.render():
         print("\033[H\033[2J")
         colors.colorprint(logo.logo,'green')
     except KeyboardInterrupt: continue
-
+print("\033[?1049l", end="") ## drop screen buffer
 print("Thanks for using!")
