@@ -1,9 +1,11 @@
-# new
+## my stuff
 import oscilloscope
 import colors
 import menucli as menu
 import mido
 import logo
+
+##python stuff
 import serial
 import serial.tools.list_ports
 import numpy as np
@@ -12,7 +14,9 @@ from pyqtgraph.Qt import QtCore
 import signal
 import threading
 import time
+
 io_running = False
+frame_lock = threading.Lock()
 
 midi_input = None
 serial_output : serial.Serial = None
@@ -23,7 +27,6 @@ data_lock = threading.Lock()
 oscilloscope.init_settings()
 
 shutdown_requested = False
-
 latest_frame = None
 new_frame = False
 frame_counter = 0
@@ -31,7 +34,7 @@ drawn_frame_counter = -1
 
 buffers = {
     i: np.zeros(oscilloscope.Channel.buffer_size,dtype=np.int16)
-    for i in range(oscilloscope.settings["channels_amount"])
+    for i in range(oscilloscope.settings["channels"])
 }
 
 def create_window():
@@ -43,6 +46,7 @@ def create_window():
     window.setWindowTitle("SynthTracer")
     app = pg.mkQApp("SynthTracer")
     oscilloscope.link_window(window)
+
 def close_window():
     if not serial_output : return
     global window
@@ -51,7 +55,6 @@ def close_window():
 
 def serialTX():
     global serial_output
-    # Drain all available MIDI messages immediately so they don't queue up
     while True:
         message = midi_input.poll()
         if not message:
@@ -62,12 +65,8 @@ def serialTX():
             serial_output = None
             return Exception
 
-
-frame_lock = threading.Lock()
-
 def serialRX():
     global stream_buffer, serial_output, latest_frame, frame_counter, new_frame
-
     try:
         waiting = serial_output.in_waiting
         if waiting:
@@ -77,50 +76,37 @@ def serialRX():
         return False
 
     buffer_size = oscilloscope.Channel.buffer_size
-    channel_amount = oscilloscope.settings["channels_amount"]
-
+    channel_amount = oscilloscope.settings["channels"]
     channel_bytes = buffer_size * 2
     packet_size = 3 + channel_bytes
 
-    if not hasattr(serialRX, "current_frame"):
+    if not hasattr(serialRX, "current_frame") or serialRX.current_frame.shape != (channel_amount, buffer_size):
         serialRX.current_frame = np.zeros(
             (channel_amount, buffer_size),
             dtype=np.int16
         )
         serialRX.received_channels = 0
+        stream_buffer.clear()
 
     offset = 0
     buffer_length = len(stream_buffer)
 
     while buffer_length - offset >= packet_size:
-
-        # 1. C-Optimized Header Search
-        header_idx = stream_buffer.find(b'\xAA\x55', offset)
-        
+        header_idx = stream_buffer.find(b'\xAA\xBB', offset)
         if header_idx == -1:
-            # Header not found. Discard garbage but keep the very last byte
-            # just in case it is 0xAA waiting for its 0x55 counterpart.
             offset = max(0, buffer_length - 1)
             break
-            
         if header_idx != offset:
             offset = header_idx
-            # After jumping to the header, ensure we still have a full packet
             if buffer_length - offset < packet_size:
                 break
-
         channel_id = stream_buffer[offset + 2]
-
-        # Invalid channel handling
         if channel_id >= channel_amount:
-            offset += 2 # Skip the current 0xAA to keep searching
+            offset += 2
             continue
 
         data_start = offset + 3
-
-        # 2. Zero-Allocation Assignment
         # np.frombuffer creates a view. Assigning it directly to the slice 
-        # copies the memory efficiently without a redundant .copy() heap allocation.
         serialRX.current_frame[channel_id, :] = np.frombuffer(
             stream_buffer,
             dtype="<i2",
@@ -130,7 +116,6 @@ def serialRX():
 
         serialRX.received_channels |= (1 << channel_id)
         offset += packet_size
-
         # Complete frame
         if serialRX.received_channels == (1 << channel_amount) - 1:
             with frame_lock:
@@ -138,30 +123,17 @@ def serialRX():
                 new_frame = True
             serialRX.received_channels = 0
 
-    # 3. Safe Deletion and Spiral-of-Death Prevention
     if offset > 0:
         del stream_buffer[:offset]
-        
-    # Hard limit: If the buffer holds more than 10 full multi-channel frames,
-    # we are lagging. Flush the oldest data to forcefully catch up to real-time.
-    max_safe_buffer = packet_size * channel_amount * 10
-    if len(stream_buffer) > max_safe_buffer:
-        del stream_buffer[:- (packet_size * channel_amount * 2)]
 
     return True
-
-
-
-
 
 def background_io_loop():
     global io_running
 
     while io_running:
-
         serial_result = serialTX()
         rx_result = serialRX()
-
         if serial_result is Exception or rx_result is False:
             io_running = False
             colors.colorprint("[ERR] Disconnected!", "red")
@@ -295,29 +267,30 @@ def handle_oscilloscope():
     except KeyboardInterrupt: return
 
 def set_and_store_settings(index, value = None):
-    index = index + 1
     match index:
-        case 1:
+        case 0:
             oscilloscope.settings["buffer_size"] = value
-        case 2:
-            oscilloscope.settings["sampling_rate"] = value
-        case 3:
-            oscilloscope.settings["wave_cycles"] = value
-        case 4:
-            oscilloscope.settings["channels_amount"] = value
-        case 5:
+        case 1:
             oscilloscope.settings["min_val"] = value
-        case 6:
+        case 2:
             oscilloscope.settings["max_val"] = value
+        case 3:
+            oscilloscope.settings["channels"] = value
+        case 4:
+            channel_name = menu.ask_value(str,"Enter channel name, keep empty for default : ")
+            if(channel_name == ""):
+               oscilloscope.settings.pop("channel_names", value)
+            else:
+                oscilloscope.settings["channel_names"][value]  = channel_name
     oscilloscope.sync_json_settings()
     oscilloscope.init_settings()
+
 ConfigurationMenu = menu.Menu([
     menu.MenuItem("Buffer Size", int, "Enter a size in bytes : "),
-    menu.MenuItem("Sampling Rate", int, "Enter a rate in hz : "),
-    menu.MenuItem("Cycles", int, "Enter a number of cycles : "),
-    menu.MenuItem("Channels amount", int, "Enter some channels amount : "),
     menu.MenuItem("Minimum value", int, "Enter a value : "),
     menu.MenuItem("Maximum value", int, "Enter a value : "),
+    menu.MenuItem("Channels", int, "Enter channels amount : "),
+    menu.MenuItem("Channel names", int, "Enter a channel number : ",0, oscilloscope.settings["channels"]),
     menu.MenuItem("Exit",menu.Exit)
 ],
 set_and_store_settings, False)

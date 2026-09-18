@@ -1,9 +1,6 @@
 {
-    "sampling_rate": 22050,
-    "wave_cycles": 4,
+    "buffer_size": 256,
     "min_val": -32768,
     "max_val": 32767,
-    "channels_amount": 16,
-    "channel_names": {},
-    "buffer_size": 256
+    "channels": 16
 }
