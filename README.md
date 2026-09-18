@@ -2,6 +2,7 @@
 Serial Plotting tool RX + Midi TX
 
 ![thumbnail](https://github.com/Mejolov24/SynthTracer/blob/main/thumbnail.png)
+![thumbnail2](https://github.com/Mejolov24/SynthTracer/blob/main/thumbnail2.png)
 
 ## Dependencies
 - mido
