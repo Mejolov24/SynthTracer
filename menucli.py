@@ -1,5 +1,5 @@
 from collections.abc import Callable
-
+## functions return false when  there is a keyboard interrupt, making the menu go back one step
 
 class MenuItem:
     def __init__(self, name : str, type : type, value_name : str = None , value_min = None, value_max = None,  target = None, callback : Callable[[int], None] = None):
@@ -38,6 +38,15 @@ def ask_value(type : type, text : str, min = None, max = None):
                 try:answer = input(text)
                 except KeyboardInterrupt : return KeyboardInterrupt
                 result = type(answer)
+                if (type == bool):
+                    ans_lower = str(answer).lower()
+                    valid = (ans_lower in ("true", "false"))
+                    result = (ans_lower == "true")
+                    if (valid):
+                        return result
+                    else:
+                        print("\033[31m", f"[ERR] Invalid input, must be true or false!","\033[0m")
+                        continue
                 if (min == None and max == None) : return result
                 if (type == int):
                     if not (result < min or result > max) : return result
@@ -89,6 +98,6 @@ def render():
 
         case _:
             selection_value = ask_value(selection.type, "  " + selection.value_name, selection.value_min, selection.value_max)
-            if (selection_value is None) : return render()
+            if (selection_value is None or selection_value is KeyboardInterrupt) : return render()
             callback(selection_value)
     return True
