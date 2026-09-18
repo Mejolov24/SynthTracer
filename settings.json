@@ -1,6 +1,0 @@
-{
-    "buffer_size": 256,
-    "min_val": -32768,
-    "max_val": 32767,
-    "channels": 16
-}

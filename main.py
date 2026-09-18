@@ -284,6 +284,9 @@ def set_and_store_settings(index, value = None):
                 oscilloscope.settings["channel_names"][value]  = channel_name
     oscilloscope.sync_json_settings()
     oscilloscope.init_settings()
+    if hasattr(serialRX, "current_frame"):
+            delattr(serialRX, "current_frame")
+    stream_buffer.clear()
 
 ConfigurationMenu = menu.Menu([
     menu.MenuItem("Buffer Size", int, "Enter a size in bytes : "),
