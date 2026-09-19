@@ -166,9 +166,13 @@ def draw():
         new_frame = False
 
     for channel in range(frame.shape[0]):
-        oscilloscope.channels[channel].set_data(
-            frame[channel]
-        )
+            ch_data = frame[channel]
+            zero_crossings = np.where((ch_data[:-1] < 0) & (ch_data[1:] >= 0))[0]
+            
+            if len(zero_crossings) > 0:
+                trigger_idx = zero_crossings[0]
+                ch_data = np.roll(ch_data, -trigger_idx)
+            oscilloscope.channels[channel].set_data(ch_data)
 
 def handle_IO():
     global io_running
